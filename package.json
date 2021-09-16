@@ -13,6 +13,8 @@
     "@emotion/server": "^11.4.0",
     "@emotion/styled": "^11.3.0",
     "axios": "^0.21.1",
+    "firebase": "^9.0.2",
+    "geofire-common": "^5.2.0",
     "next": "11.0.1",
     "proj4": "^2.7.5",
     "react": "17.0.2",

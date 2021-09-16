@@ -1,7 +1,11 @@
 import axios from 'axios';
 import { FC, useEffect, useRef } from 'react';
 import tw from 'twin.macro';
-import proj4 from 'proj4';
+import { db } from 'utils/firebase';
+import { query, collection, addDoc, doc, getDocs, setDoc, orderBy, startAt, endAt } from 'firebase/firestore';
+import { debounce } from 'lodash';
+
+const geofire = require('geofire-common');
 
 const MAP_ROOT_CONTAINER_ID = 'map-root-container';
 
@@ -83,12 +87,111 @@ const getBuildingNumber = (data: BuildingRequest) => {
 const MainContainer: FC = () => {
   const mapRef = useRef();
 
+  const addTest = async () => {
+    try {
+      console.log('addtest');
+      const docRef = await addDoc(collection(db, 'users'), {
+        first: 'Ada',
+        last: 'Lovelace',
+        born: 1815,
+      });
+      console.log('Document written with ID: ', docRef.id);
+    } catch (e) {
+      console.error('Error adding document: ', e);
+    }
+  };
+
+  const getRadius = () => {
+    const map = mapRef.current;
+    const bounds = map.getBounds();
+
+    const polyline = new naver.maps.Polyline({
+      map: map,
+      path: [new naver.maps.LatLng(map.getCenter()), new naver.maps.LatLng(bounds._ne)],
+      strokeOpacity: 1,
+    });
+    const distance = polyline.getDistance();
+    polyline.onRemove();
+    return distance;
+  };
+
+  const circleRef = useRef();
+  const markers = useRef();
+
+  const loadPins = async () => {
+    const map = mapRef.current;
+    const naver = window.naver;
+
+    const $center = map.getCenter();
+
+    const center = [Number($center._lat), Number($center._lng)];
+    const radiusInM = parseInt(getRadius() - 800);
+
+    if (circleRef.current) {
+      circleRef.current.onRemove();
+    }
+
+    const circle = new naver.maps.Circle({
+      map: map,
+      center: new naver.maps.LatLng(...center),
+      radius: radiusInM,
+      fillColor: 'cyan',
+      fillOpacity: 0.1,
+    });
+
+    circleRef.current = circle;
+
+    const bounds = geofire.geohashQueryBounds(center, radiusInM);
+
+    let result = [];
+    for (const b of bounds) {
+      const q = query(collection(db, 'pins'), orderBy('point.geohash'), startAt(b[0]), endAt(b[1]));
+
+      const querySnapshot = await getDocs(q);
+
+      try {
+        querySnapshot.forEach((doc) => {
+          result.push(doc.data());
+        });
+      } catch (error) {
+        console.log(error);
+      }
+    }
+
+    result = result.filter((item) => {
+      const { lat, lng } = item.point;
+      const distanceInKm = geofire.distanceBetween([Number(lat), Number(lng)], center);
+      const distanceInM = distanceInKm * 1000;
+
+      return distanceInM <= radiusInM;
+    });
+
+    markers.current?.forEach((marker) => marker?.onRemove());
+
+    let loopMarkers = [];
+    result.forEach((item) => {
+      const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(item.point.lat, item.point.lng),
+        clickable: true,
+        map,
+        zIndex: 100,
+      });
+      loopMarkers.push(marker);
+    });
+
+    markers.current = loopMarkers;
+  };
+
   useEffect(() => {
     const naver = window.naver;
+
+    // addTest();
 
     // set map
     const map = new naver.maps.Map(MAP_ROOT_CONTAINER_ID);
     mapRef.current = map;
+
+    loadPins();
 
     const mapClickEvent = async (e) => {
       // const res = await searchCoordinateToAddress(e.latlng);
@@ -137,8 +240,9 @@ const MainContainer: FC = () => {
       // }
 
       const { x, y } = e.coord;
-
       const url = `https://map.seoul.go.kr/smgis/apps/geocoding.do`;
+
+      console.log('origin', e.coord);
 
       const params = {
         cmd: 'getReverseGeocoding',
@@ -156,16 +260,29 @@ const MainContainer: FC = () => {
         })
         .then((res) => res.data);
 
+      const [lng, lat] = head.point.split(',');
+      const geohash = geofire.geohashForLocation([Number(lat), Number(lng)]);
+
       const data = {
         code: body[0].code,
-        point: head.point.split(','),
+        point: {
+          geohash,
+          lat,
+          lng,
+        },
         NEW_ADDR: head.NEW_ADDR,
         LEGAL_ADDR: head.LEGAL_ADDR,
       };
-      const [lng, lat] = data.point;
       console.log(data);
 
-      const marker = new naver.maps.Marker({
+      // const docRef = doc(db, 'pins', data.code);
+
+      // setDoc(docRef, {
+      //   ...data,
+      //   message: ['test'],
+      // });
+
+      new naver.maps.Marker({
         position: new naver.maps.LatLng(lat, lng),
         clickable: true,
         map,
@@ -174,6 +291,13 @@ const MainContainer: FC = () => {
     };
 
     map.addListener('click', mapClickEvent);
+
+    const boundsChangeEvent = debounce((e) => {
+      console.log('bounds_changed');
+      // loadPins();
+    }, 500);
+
+    map.addListener('bounds_changed', boundsChangeEvent);
 
     // map.setCenter(new naver.maps.LatLng(centerPoint._lat, centerPoint._lng));
     // map.setZoom(20);
